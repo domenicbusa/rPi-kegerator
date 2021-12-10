@@ -11,9 +11,9 @@ pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
 coolingOn_temp = 80
 coolingOff_temp = 75
-compOn_minMinutes = 2
-compOn_maxMinutes = 15
-compOff_minMinutes = 10
+compOn_minMinutes = 0.2 #2
+compOn_maxMinutes = 1 #15
+compOff_minMinutes = 0.5 #10
 
 #TODO
 ## inputs
@@ -52,6 +52,8 @@ def initialize():
         GPIO.setup(pin_doorSensor, GPIO.IN)
         logging.info("init success")
         # TODO - insert log entry for configuration
+        logging.info("initialization parameters\ncoolingOn_temp : {}\ncoolingOff_temp : {}\ncompOn_minMinutes : {}\ncompOn_maxMinutes : {}\ncompOff_minMinutes : {}".format(coolingOn_temp,coolingOff_temp,compOn_minMinutes,compOn_maxMinutes,compOff_minMinutes))
+
     except:
         logging.error("ERROR in init")
 
@@ -83,22 +85,25 @@ def thermostat(T, current_stateOn, dt_state):
     # T = inside temp of fridge in F
     # calculate duration of state for dt_state, time in state
     dt_state[2] = (time.time() - dt_state[1])/60 # minutes , dt_state = [current state, start time, duration in state]
-    if T > coolingOn_temp and ~current_stateOn:
-        if dt_state[2] > compOff_minMinutes:
-            # compressor to ON
-            next_stateOn = True
-            dt_state = [next_stateOn, time.time(), 0]
-        else:
-            next_stateOn = current_stateOn
-    elif T < coolingOff_temp and current_stateOn:
-        if dt_state[2] > compOn_minMinutes:
-            next_stateOn = False
-            dt_state = [next_stateOn, time.time(), 0]
-    elif dt_state[0] and dt_state[2] > compOn_maxMinutes:
+    if T>coolingOn_temp and current_stateOn==False and dt_state[2]>compOff_minMinutes:
+        # normal compressor to ON
+        next_stateOn = True
+        logging.debug("1 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
+        dt_state = [next_stateOn, time.time(), 0]
+    elif T<coolingOff_temp and current_stateOn==True and dt_state[2] > compOn_minMinutes:
+        # normal compressor to OFF
         next_stateOn = False
+        logging.debug("2 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
+        dt_state = [next_stateOn, time.time(), 0]
+    elif dt_state[0]==True and dt_state[2] > compOn_maxMinutes:
+        # timeout compressor to OFF
+        next_stateOn = False
+        logging.debug("3 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
         dt_state = [next_stateOn, time.time(), 0]
     else:
+        # no state change
         next_stateOn = current_stateOn
+    
     return next_stateOn, dt_state
 
 def main():
@@ -110,15 +115,17 @@ def main():
     while True:
         # read temperature from sensor
         Tc,Tf = read_temp()
+        #Tf = float(input("Enter Tf : "))
         # determine compressor state
         compOn, dt_state = thermostat(Tf,current_stateOn, dt_state)
+        # log
+        logging.debug("TempF, next_state, state, state_ts, state_duration is ({}, {}, {}, {}, {})".format(Tf,compOn,current_stateOn,round(dt_state[1],1),round(dt_state[2],1)))
         # change compressor state
         comp_switch(compOn)
-        logging.debug("TempF, compOn, current_stateOn is ({}, {}, {})".format(Tf,compOn,current_stateOn))
         # save current cycle's compressor state for next cycle
         current_stateOn = compOn
         
-        time.sleep(5)
+        time.sleep(1)
 
 if __name__ == "__main__":
     ## initialization
