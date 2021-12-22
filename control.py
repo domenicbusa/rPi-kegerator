@@ -2,6 +2,9 @@ import glob
 import time
 import RPi.GPIO as GPIO
 import logging
+import random
+
+import paho.mqtt.client as mqtt_client
 
 # configuration
 base_dir = '/sys/bus/w1/devices/'
@@ -14,6 +17,13 @@ coolingOff_temp = 75
 compOn_minMinutes = 0.2 #2
 compOn_maxMinutes = 1 #15
 compOff_minMinutes = 0.5 #10
+
+# mqtt config
+broker = '192.168.68.109'
+port = 1883
+topic = 'kegerator0/sensor_float'
+client_id = 'python-mqtt-1'
+
 
 #TODO
 ## inputs
@@ -47,15 +57,30 @@ def initialize():
                 datefmt='%Y-%m-%d %H:%M:%S',
                 level=logging.DEBUG)
         # set up GPIO
+        logging.debug("before GPIO init")
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(pin_compSwitch, GPIO.OUT)
         GPIO.setup(pin_doorSensor, GPIO.IN)
         logging.info("init success")
         # TODO - insert log entry for configuration
         logging.info("initialization parameters\ncoolingOn_temp : {}\ncoolingOff_temp : {}\ncompOn_minMinutes : {}\ncompOn_maxMinutes : {}\ncompOff_minMinutes : {}".format(coolingOn_temp,coolingOff_temp,compOn_minMinutes,compOn_maxMinutes,compOff_minMinutes))
-
+        print("ok")
     except:
         logging.error("ERROR in init")
+        print("bad")
+
+def connect_mqtt():
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            print("Connected to MQTT Broker")
+            logging.debug("Connected to MQTT Broker")
+        else:
+            print("Failed to connect, return code %d\n", rc)
+            logging.debug("Failed to connect, return code %d\n", rc)
+    client = mqtt_client.Client(client_id)
+    client.on_connect = on_connect
+    client.connect(broker, port)
+    return client
 
 def comp_switch(compOn):
     if compOn :
@@ -110,11 +135,18 @@ def main():
     # set inital last state of compressor to OFF
     current_stateOn = False
     dt_state = [False,0,0] # (state,start_time,duration), initialize tracker for time in state
+    
+    # mqtt setup
+    client = connect_mqtt()
+    client.loop_start()
+    logging.info("connection to mqtt broker success")
 
     # runtime code
     while True:
         # read temperature from sensor
+        #logging.debug("start run")
         Tc,Tf = read_temp()
+        #logging.debug("temp is {}".format(Tf))
         #Tf = float(input("Enter Tf : "))
         # determine compressor state
         compOn, dt_state = thermostat(Tf,current_stateOn, dt_state)
@@ -125,6 +157,15 @@ def main():
         # save current cycle's compressor state for next cycle
         current_stateOn = compOn
         
+        # publish to mqtt
+        result = client.publish(topic, Tf)
+        status = result[0]
+        if status == 0:
+            logging.debug(f"Send Temp {Tf} to '{topic}'")
+        else:
+            logging.debug(f"Failed to send message to topic '{topic}'")
+
+
         time.sleep(1)
 
 if __name__ == "__main__":
