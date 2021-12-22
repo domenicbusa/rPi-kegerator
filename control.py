@@ -10,6 +10,12 @@ import paho.mqtt.client as mqtt_client
 base_dir = '/sys/bus/w1/devices/'
 device_folder = glob.glob(base_dir + '28*')[0]
 device_file = device_folder + '/w1_slave'
+
+sensors = ['28-0000065be5ef',
+        '28-0000065c181d',
+        '28-0000065cd66d']
+device_files = {s_i:(base_dir + s_i + '/w1_slave') for s_i in sensors}
+
 pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
 coolingOn_temp = 80
@@ -24,6 +30,31 @@ port = 1883
 topic = 'kegerator0/sensor_float'
 client_id = 'python-mqtt-1'
 
+# initialize mqtt message json schema
+msgSensor_format = """{{
+    "sensors": {{
+        "intTemp": {_intTemp},
+        "extTemp": {_extTemp},
+        "compTemp": {_compTemp},
+        "compAmps": {_compAmps},
+        "kegWeight": {_kegWeight} }},
+    "tags": {{
+        "compState": "{_compState}",
+        "doorState": "{_doorState}"}},
+    "ts": {_ts} }}"""
+msgEvent_format = """{{
+    "event_type": "{_type}",
+    "event_current":"{_current}",
+    "event_last": "{_last}",
+    "lastDuration": {_duration},
+    "ts": {_ts} }}"""
+msgConfig_format = """{{
+    "compOffTemp": {_compOffTemp},
+    "compOnTemp": {_compOnTemp},
+    "compOnMinTime": {_compOnMinTime},
+    "compOnMaxTime": {_compOnMaxTime},
+    "compOffMinTime": {_compOffMinTime},
+    "ts": {_ts} }}"""
 
 #TODO
 ## inputs
@@ -88,14 +119,14 @@ def comp_switch(compOn):
     else :
         GPIO.output(pin_compSwitch,GPIO.LOW)
 
-def read_temp_raw():
+def read_temp_raw(device_file):
     f = open(device_file, 'r')
     lines = f.readlines()
     f.close()
     return lines
 
-def read_temp():
-    lines = read_temp_raw()
+def read_temp(device_file):
+    lines = read_temp_raw(device_file)
     while lines[0].strip()[-3:] != 'YES':
         time.sleep(0.2)
         lines = read_temp_raw()
@@ -131,6 +162,15 @@ def thermostat(T, current_stateOn, dt_state):
     
     return next_stateOn, dt_state
 
+
+def log_data(intTemp, extTemp, compTemp, compAmps, kegWeight, compState, doorState, ts):
+    logging.debug(f"""ts -- intTemp, extTemp, compTemp, compAmps, kegWeight, compState, doorState : ({ts} --
+            {intTemp}, {extTemp}, {compTemp}, {compAmps}, {kegWeight}, {compState}, {doorState})""")
+
+
+#def mqtt_pub(client):
+    # publish sensor, event, and config data to mqtt broker
+
 def main():
     # set inital last state of compressor to OFF
     current_stateOn = False
@@ -144,19 +184,25 @@ def main():
     # runtime code
     while True:
         # read temperature from sensor
-        #logging.debug("start run")
-        Tc,Tf = read_temp()
+        _,Tf = read_temp(device_files['28-0000065be5ef'])
+        _,Tf_ext = read_temp(device_files['28-0000065c181d'])
+        _,Tf_comp = read_temp(device_files['28-0000065cd66d'])
         #logging.debug("temp is {}".format(Tf))
         #Tf = float(input("Enter Tf : "))
+        
         # determine compressor state
         compOn, dt_state = thermostat(Tf,current_stateOn, dt_state)
+        
+        #TODO - move to a method
         # log
         logging.debug("TempF, next_state, state, state_ts, state_duration is ({}, {}, {}, {}, {})".format(Tf,compOn,current_stateOn,round(dt_state[1],1),round(dt_state[2],1)))
+        
         # change compressor state
         comp_switch(compOn)
         # save current cycle's compressor state for next cycle
         current_stateOn = compOn
         
+        #TODO - move to a method
         # publish to mqtt
         result = client.publish(topic, Tf)
         status = result[0]
