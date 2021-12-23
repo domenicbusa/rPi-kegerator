@@ -24,6 +24,15 @@ compOn_minMinutes = 0.2 #2
 compOn_maxMinutes = 1 #15
 compOff_minMinutes = 0.5 #10
 
+configData = {'pin_compSwitch':pin_compSwitch,
+        'pin_doorSensor':pin_doorSensor,
+        'coolingOn_temp':coolingOn_temp,
+        'coolingOff_temp':coolingOff_temp,
+        'compOn_minMinutes':compOn_minMinutes,
+        'compOn_maxMinutes':compOn_maxMinutes,
+        'compOff_minMinutes':compOff_minMinutes,
+        'ts':time.time_ns()} #TODO - add temp sensor configs, broker, port, topics
+
 # mqtt config
 broker = '192.168.68.109'
 port = 1883
@@ -137,80 +146,189 @@ def read_temp(device_file):
         temp_f = temp_c * 9.0 / 5.0 + 32.0
         return temp_c, temp_f
 
-def thermostat(T, current_stateOn, dt_state):
-    # T = inside temp of fridge in F
-    # calculate duration of state for dt_state, time in state
-    dt_state[2] = (time.time() - dt_state[1])/60 # minutes , dt_state = [current state, start time, duration in state]
-    if T>coolingOn_temp and current_stateOn==False and dt_state[2]>compOff_minMinutes:
+#def thermostat(T, current_stateOn, dt_state):
+def thermostat(T, dt_state, client):
+    # inputs
+        # T - inside temp of fridge in F
+        # current_stateOn - 
+        # dt_state = [next_stateOn, current_timestamp, current_state_duration]
+            # next_stateOn - state of compressor (ON/OFF) for next cycle
+            # current_timestamp - 
+            # current_state_duration - duration of current state
+        # dt_state = {'state': current state of compressor True==ON,
+        #            'start_ts': start time of current state,
+        #            'duration': duration (minutes) of current state}}
+
+    # update duration of state for dt_state, time in state
+#    dt_state[2] = (time.time() - dt_state[1])/60 # minutes , dt_state = [current state, start time, duration in state]
+    dt_state['duration'] = (time.time() - dt_state['start_ts'])/60 # minutes
+    current_stateOn = dt_state['state'] # store state of compressor before thermostat state change logic
+    current_stateDuration = dt_state['duration']
+    next_stateOn = current_stateOn
+    state_change = 0
+    # state change logic
+    if T>coolingOn_temp and current_stateOn==False and dt_state['duration']>compOff_minMinutes: #dt_state[2]>compOff_minMinutes:
         # normal compressor to ON
         next_stateOn = True
-        logging.debug("1 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
-        dt_state = [next_stateOn, time.time(), 0]
-    elif T<coolingOff_temp and current_stateOn==True and dt_state[2] > compOn_minMinutes:
+        state_change = 1
+        #logging.debug("1 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
+        #dt_state = [next_stateOn, time.time(), 0]
+        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+    elif T<coolingOff_temp and current_stateOn==True and dt_state['duration']>compOn_minMinutes: #dt_state[2] > compOn_minMinutes:
         # normal compressor to OFF
         next_stateOn = False
-        logging.debug("2 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
-        dt_state = [next_stateOn, time.time(), 0]
-    elif dt_state[0]==True and dt_state[2] > compOn_maxMinutes:
+        state_change = 2
+        #logging.debug("2 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
+        #dt_state = [next_stateOn, time.time(), 0]
+        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+    elif current_stateOn==True and dt_state['duration'] > compOn_maxMinutes: #dt_state[2] > compOn_maxMinutes:
         # timeout compressor to OFF
         next_stateOn = False
-        logging.debug("3 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state[2]))
-        dt_state = [next_stateOn, time.time(), 0]
-    else:
+        state_change = 3
+        #logging.debug("3 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
+        #dt_state = [next_stateOn, time.time(), 0]
+        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+    #else:
         # no state change
-        next_stateOn = current_stateOn
-    
-    return next_stateOn, dt_state
+        #next_stateOn = current_stateOn
+        # outputs
+            # next_stateOn - state of compressor (ON/OFF) for next cycle
+            # dt_state = [next_stateOn, current timestamp - duration in minutes
+    #return next_stateOn, dt_state
 
+    # tasks if an event occurred
+    if current_stateOn != next_stateOn:
+        # update dt_state
+        dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+        # write to log
+        logging.debug(f"{state_change} - cur_state, next_state, dur_state : {current_stateOn} --> {next_stateOn} - {current_stateDuration} mins")
+        # publish event over mqtt
+        eventData = {'event_type':'compState',
+            'event_current':next_stateOn,
+            'event_last': current_stateOn,
+            'lastDuration': current_stateDuration,
+            'ts': dt_state['start_ts']}
+        mqtt_pub(client, 'event', eventData)
 
-def log_data(intTemp, extTemp, compTemp, compAmps, kegWeight, compState, doorState, ts):
-    logging.debug(f"""ts -- intTemp, extTemp, compTemp, compAmps, kegWeight, compState, doorState : ({ts} --
-            {intTemp}, {extTemp}, {compTemp}, {compAmps}, {kegWeight}, {compState}, {doorState})""")
+    return dt_state
 
+def log_data(sysData): 
+    logging.debug(f"""intTemp, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
 
-#def mqtt_pub(client):
+def read_sensors():
+    # temperature sensors
+    _,intTemp = read_temp(device_files['28-0000065be5ef'])
+    _,extTemp = read_temp(device_files['28-0000065c181d'])
+    _,compTemp = read_temp(device_files['28-0000065cd66d'])
+    # current transducer
+    compAmps = -1
+    # keg weight
+    kegWeight = -1
+    # door state
+    doorState = "CLOSED"
+
+    # compile values into dict
+    sensor_dict = {'intTemp' : intTemp,
+                'extTemp' : extTemp,
+                'compTemp': compTemp,
+                'compAmps': compAmps,
+                'kegWeight': kegWeight,
+                'doorState': doorState,
+                'ts': time.time_ns()}
+    return sensor_dict
+
+def mqtt_pub(client, msg_type, data):
     # publish sensor, event, and config data to mqtt broker
+    # client - established client to mqtt broker
+    # msg_type - ['sensor', 'event', 'config']
+    # data - dictionary of data related to msg_type
+    if msg_type == 'sensor':
+        # sensor data pub
+        topic = 'kegerator/sensor'
+        msg = msgSensor_format.format(_intTemp=data['intTemp'],
+                                _extTemp=data['extTemp'],
+                                _compTemp=data['compTemp'],
+                                _compAmps=data['compAmps'],
+                                _kegWeight=data['kegWeight'],
+                                _compState=data['compState'],
+                                _doorState=data['doorState'],
+                                _ts=data['ts'])
+    if msg_type == 'event':
+        # event data pub
+        topic = 'kegerator/event'
+        msg = msgEvent_format.format(_type=data['event_type'],
+                                _current=data['event_current'],
+                                _last=data['event_last'],
+                                _duration=data['lastDuration'],
+                                _ts=data['ts'])
+    if msg_type == 'config':
+        # config data pub
+        topic = 'kegerator/config'
+        msg = msgConfig_format.format(_compOffTemp=data['coolingOff_temp'],
+                                _compOnTemp=data['coolingOn_temp'],
+                                _compOnMinTime=data['compOn_minMinutes'],
+                                _compOnMaxTime=data['compOn_maxMinutes'],
+                                _compOffMinTime=data['compOff_minMinutes'],
+                                _ts=data['ts'])
+    # publish message
+    result = client.publish(topic, msg)
+    status = result[0]
+
+    if status == 0:
+        logging.debug(f"Sent {msg_type} data to '{topic}'")
+    else:
+        logging.debug(f"Failed to send {msg_type} data to topic '{topic}'")
+
 
 def main():
     # set inital last state of compressor to OFF
-    current_stateOn = False
-    dt_state = [False,0,0] # (state,start_time,duration), initialize tracker for time in state
-    
+    #current_stateOn = False
+    #dt_state = [False,0,0] # (current_state, next_state,start_time,duration), initialize tracker for time in state
+    dt_state = {'state': False,
+                'start_ts': 0,
+                'duration': 0}
     # mqtt setup
     client = connect_mqtt()
     client.loop_start()
     logging.info("connection to mqtt broker success")
+    
+    # publish config message
+    mqtt_pub(client, 'config', configData) 
 
     # runtime code
     while True:
-        # read temperature from sensor
-        _,Tf = read_temp(device_files['28-0000065be5ef'])
-        _,Tf_ext = read_temp(device_files['28-0000065c181d'])
-        _,Tf_comp = read_temp(device_files['28-0000065cd66d'])
-        #logging.debug("temp is {}".format(Tf))
-        #Tf = float(input("Enter Tf : "))
+        # read sensors
+        #_,intTemp = read_temp(device_files['28-0000065be5ef'])
+        #_,extTemp = read_temp(device_files['28-0000065c181d'])
+        #_,compTemp = read_temp(device_files['28-0000065cd66d'])
+        sysData = read_sensors()
         
+        intTemp = sysData['intTemp']
+        #DEBUG intTemp = float(input("Enter intTemp : ")) #DEBUG
+        
+        current_stateOn = dt_state['state']
         # determine compressor state
-        compOn, dt_state = thermostat(Tf,current_stateOn, dt_state)
-        
-        #TODO - move to a method
+        #compOn, dt_state = thermostat(intTemp,current_stateOn, dt_state) #TODO - simplify by removing current_stateOn for thermostat()
+        dt_state = thermostat(intTemp, dt_state, client)
+        compOn = dt_state['state']
+        # update sensor_dict for mqtt pub message
+        sysData.update({'compState': 'ON' if compOn else 'OFF',
+                            'next_state': compOn,
+                            'state': current_stateOn,
+                            'state_ts': round(dt_state['start_ts'],1),
+                            'state_duration': round(dt_state['duration'],1)})
+
         # log
-        logging.debug("TempF, next_state, state, state_ts, state_duration is ({}, {}, {}, {}, {})".format(Tf,compOn,current_stateOn,round(dt_state[1],1),round(dt_state[2],1)))
+        log_data(sysData)
+        #logging.debug("intTemp, next_state, state, state_ts, state_duration is ({}, {}, {}, {}, {})".format(intTemp,compOn,current_stateOn,round(dt_state[1],1),round(dt_state[2],1)))
         
         # change compressor state
         comp_switch(compOn)
-        # save current cycle's compressor state for next cycle
-        current_stateOn = compOn
+        # update dt_state for new compressor state
+        #dt_state['state'] = compOn
         
-        #TODO - move to a method
-        # publish to mqtt
-        result = client.publish(topic, Tf)
-        status = result[0]
-        if status == 0:
-            logging.debug(f"Send Temp {Tf} to '{topic}'")
-        else:
-            logging.debug(f"Failed to send message to topic '{topic}'")
-
+        # publish sensor to mqtt
+        mqtt_pub(client, 'sensor', sysData)
 
         time.sleep(1)
 
