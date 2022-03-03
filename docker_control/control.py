@@ -3,7 +3,7 @@ import time
 import RPi.GPIO as GPIO
 import logging
 import random
-import pyserial
+import serial
 import json
 
 import paho.mqtt.client as mqtt_client
@@ -24,9 +24,10 @@ ct_sensor = {'adr':'/dev/ttyACM0','baud':9600}
 try:
     ser = serial.Serial(ct_sensor['adr'], ct_sensor['baud'], timeout=1)
     ser.reset_input_buffer()
-    logging.debug('success - serial communication')
+    #logging.debug('success - serial communication')
 except:
-    logging.debug('failed to initialize serial com.')
+    pass
+    #logging.debug('failed to initialize serial com.')
 
 pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
@@ -228,7 +229,7 @@ def thermostat(T, dt_state, client):
     return dt_state
 
 def log_data(sysData): 
-    logging.debug(f"""intTemp, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
+    logging.debug(f"""intTemp, compAmps, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
 
 def read_sensors():
     # temperature sensors
@@ -325,6 +326,7 @@ def main():
         #_,intTemp = read_temp(device_files['28-0000065be5ef'])
         #_,extTemp = read_temp(device_files['28-0000065c181d'])
         #_,compTemp = read_temp(device_files['28-0000065cd66d'])
+        ser.reset_input_buffer() #TODO - resolve build up of messages on serial buffer, request/reply arch?
         sysData = read_sensors() #TODO - add compPower to sysData
         
         intTemp = sysData['intTemp']

@@ -12,7 +12,7 @@ FROM woahbase/alpine-rpigpio:armhf
 #RUN apt-get -y update && apt-get install -y gcc libzbar-dev
 #RUN python -m pip install --upgrade pip
 # add python libraries
-RUN pip install RPi.GPIO paho-mqtt pyserial json
+RUN pip install RPi.GPIO paho-mqtt pyserial
 # labels
 LABEL Maintainer='dbusa'
 
