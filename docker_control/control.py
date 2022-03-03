@@ -3,6 +3,8 @@ import time
 import RPi.GPIO as GPIO
 import logging
 import random
+import pyserial
+import json
 
 import paho.mqtt.client as mqtt_client
 
@@ -15,6 +17,16 @@ sensors = ['28-0000065be5ef',
         '28-0000065c181d',
         '28-0000065cd66d']
 device_files = {s_i:(base_dir + s_i + '/w1_slave') for s_i in sensors}
+
+# serial com. config
+ct_sensor = {'adr':'/dev/ttyACM0','baud':9600}
+# initialize ct measurement of serial TODO : add this to initialize with obj orient class func
+try:
+    ser = serial.Serial(ct_sensor['adr'], ct_sensor['baud'], timeout=1)
+    ser.reset_input_buffer()
+    logging.debug('success - serial communication')
+except:
+    logging.debug('failed to initialize serial com.')
 
 pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
@@ -135,18 +147,21 @@ def read_temp_raw(device_file):
     return lines
 
 def read_temp(device_file):
-    lines = read_temp_raw(device_file)
-    while lines[0].strip()[-3:] != 'YES':
-        time.sleep(0.2)
-        lines = read_temp_raw()
-    equals_pos = lines[1].find('t=')
-    if equals_pos != -1:
-        temp_string = lines[1][equals_pos+2:]
-        temp_c = float(temp_string) / 1000.0
-        temp_f = temp_c * 9.0 / 5.0 + 32.0
-        return temp_c, temp_f
+    try:
+        lines = read_temp_raw(device_file)
+        while lines[0].strip()[-3:] != 'YES':
+            time.sleep(0.2)
+            lines = read_temp_raw()
+        equals_pos = lines[1].find('t=')
+        if equals_pos != -1:
+            temp_string = lines[1][equals_pos+2:]
+            temp_c = float(temp_string) / 1000.0
+            temp_f = temp_c * 9.0 / 5.0 + 32.0
+    except:
+        logging.error("ERROR : unable to read {}".format(device_file))
+        temp_c, temp_f = -99,-99
+    return temp_c, temp_f
 
-#def thermostat(T, current_stateOn, dt_state):
 def thermostat(T, dt_state, client):
     # inputs
         # T - inside temp of fridge in F
@@ -221,7 +236,16 @@ def read_sensors():
     _,extTemp = read_temp(device_files['28-0000065c181d'])
     _,compTemp = read_temp(device_files['28-0000065cd66d'])
     # current transducer
-    compAmps = -1
+    if ser.in_waiting > 0:
+            line = ser.readline().decode('utf-8').rstrip()
+            try:
+                msg = json.loads(line)
+                compAmps = msg[0]['vals']['Irms']
+                compPower = msg[0]['vals']['Pavg']
+            except:
+                logging.debug("error in json read")
+                compAmps = -1
+                compPower = -1
     # keg weight
     kegWeight = -1
     # door state
@@ -301,7 +325,7 @@ def main():
         #_,intTemp = read_temp(device_files['28-0000065be5ef'])
         #_,extTemp = read_temp(device_files['28-0000065c181d'])
         #_,compTemp = read_temp(device_files['28-0000065cd66d'])
-        sysData = read_sensors()
+        sysData = read_sensors() #TODO - add compPower to sysData
         
         intTemp = sysData['intTemp']
         #DEBUG intTemp = float(input("Enter intTemp : ")) #DEBUG

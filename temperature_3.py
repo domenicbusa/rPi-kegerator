@@ -7,9 +7,12 @@ sensors = ['28-0000065be5ef',
 device_files = {s_i:(base_dir + s_i + '/w1_slave') for s_i in sensors}
 
 def read_temp_raw(device_file):
-    f = open(device_file, 'r')
-    lines = f.readlines()
-    f.close()
+    for i in range(5):
+        f = open(device_file, 'r')
+        lines = f.readlines()
+        f.close()
+        if lines != []:
+            break
     return lines
 
 def read_temp(device_file):
@@ -29,4 +32,4 @@ while True:
         _,Tf = read_temp(device_files[s_i])
         print(f"{s_i} : Temp is {Tf} F")
     print("----------")
-    time.sleep(5)
+    time.sleep(1)
