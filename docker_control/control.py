@@ -9,17 +9,11 @@ import json
 import paho.mqtt.client as mqtt_client
 
 # configuration
-base_dir = '/sys/bus/w1/devices/'
-device_folder = glob.glob(base_dir + '28*')[0]
-device_file = device_folder + '/w1_slave'
-
-sensors = ['28-0000065be5ef',
-        '28-0000065c181d',
-        '28-0000065cd66d']
-device_files = {s_i:(base_dir + s_i + '/w1_slave') for s_i in sensors}
-
 # serial com. config
-ct_sensor = {'adr':'/dev/ttyACM0','baud':9600}
+ct_sensor = {'adr':'/dev/ttyUSB0','baud':9600}
+READ_INTERVAL = 10 # seconds between sensor readings
+SERIAL_READ_TIMEOUT = 5 # seconds to wait for response
+reqSerialMsg = {"ready": True, "last_ts": 0}
 # initialize ct measurement of serial TODO : add this to initialize with obj orient class func
 try:
     ser = serial.Serial(ct_sensor['adr'], ct_sensor['baud'], timeout=1)
@@ -31,11 +25,11 @@ except:
 
 pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
-coolingOn_temp = 80
-coolingOff_temp = 75
-compOn_minMinutes = 0.2 #2
-compOn_maxMinutes = 1 #15
-compOff_minMinutes = 0.5 #10
+coolingOn_temp = 50
+coolingOff_temp = 60
+compOn_minMinutes = 2
+compOn_maxMinutes = 15
+compOff_minMinutes = 10
 
 configData = {'pin_compSwitch':pin_compSwitch,
         'pin_doorSensor':pin_doorSensor,
@@ -231,6 +225,7 @@ def thermostat(T, dt_state, client):
 def log_data(sysData): 
     logging.debug(f"""intTemp, compAmps, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
 
+'''
 def read_sensors():
     # temperature sensors
     _,intTemp = read_temp(device_files['28-0000065be5ef'])
@@ -247,6 +242,9 @@ def read_sensors():
                 logging.debug("error in json read")
                 compAmps = -1
                 compPower = -1
+    else:
+        compAmps = -1
+        
     # keg weight
     kegWeight = -1
     # door state
@@ -260,6 +258,47 @@ def read_sensors():
                 'kegWeight': kegWeight,
                 'doorState': doorState,
                 'ts': time.time_ns()}
+    return sensor_dict
+'''
+
+def read_sensors(ser):
+    # send request over serial
+    ser.write("data\n".encode('utf-8'))
+
+    # wait for serial response
+    listen_startTime = time.time()
+    while True :
+        # check serial for response
+        if ser.in_waiting > 0:
+            line = ser.readline().decode('utf-8').rstrip()
+            #print(f"raw: {line} \n")
+            # decode message to json
+            try:
+                msg = json.loads(line)
+            except:
+                logging.debug("error in json decode")
+            # determine message type
+            if msg[0]["name"] == "REQUEST_RCVD":
+                # skip current loop iteration, wait for data payload
+                continue
+
+            # decode data payload json
+            try:
+                sensor_dict = {'intTemp' : msg[1]["vals"]["tempF"],
+                    'extTemp' : msg[2]["vals"]["tempF"],
+                    'compTemp': msg[3]["vals"]["tempF"],
+                    'compAmps': msg[0]["vals"]["Irms"],
+                    'kegWeight': -1,
+                    'doorState': "CLOSED",
+                    'ts': time.time_ns()}
+            except:
+                logging.debug("error in json parse of serial response")
+            # successful read
+            break
+        # exit loop if timeout elapses
+        if time.time() - listen_startTime > SERIAL_READ_TIMEOUT:
+            logging.debug("error in serial read, no response")
+            break
     return sensor_dict
 
 def mqtt_pub(client, msg_type, data):
@@ -319,15 +358,14 @@ def main():
     
     # publish config message
     mqtt_pub(client, 'config', configData) 
-
-    # runtime code
+    
+    # controls the request/response of serial com
+    #reqSerialMsg = {"ready": True, "last_ts": 0}
+    
+    #runtime code
     while True:
         # read sensors
-        #_,intTemp = read_temp(device_files['28-0000065be5ef'])
-        #_,extTemp = read_temp(device_files['28-0000065c181d'])
-        #_,compTemp = read_temp(device_files['28-0000065cd66d'])
-        ser.reset_input_buffer() #TODO - resolve build up of messages on serial buffer, request/reply arch?
-        sysData = read_sensors() #TODO - add compPower to sysData
+        sysData = read_sensors(ser) #TODO - add compPower to sysData
         
         intTemp = sysData['intTemp']
         #DEBUG intTemp = float(input("Enter intTemp : ")) #DEBUG
