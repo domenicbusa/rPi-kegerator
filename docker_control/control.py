@@ -10,23 +10,15 @@ import paho.mqtt.client as mqtt_client
 
 # configuration
 # serial com. config
-ct_sensor = {'adr':'/dev/ttyUSB0','baud':9600}
+ser_config = {'adr':'/dev/ttyUSB0','baud':9600}
 READ_INTERVAL = 10 # seconds between sensor readings
 SERIAL_READ_TIMEOUT = 5 # seconds to wait for response
 reqSerialMsg = {"ready": True, "last_ts": 0}
-# initialize ct measurement of serial TODO : add this to initialize with obj orient class func
-try:
-    ser = serial.Serial(ct_sensor['adr'], ct_sensor['baud'], timeout=1)
-    ser.reset_input_buffer()
-    #logging.debug('success - serial communication')
-except:
-    pass
-    #logging.debug('failed to initialize serial com.')
 
 pin_compSwitch = 26 # GPIO Output - switching the frige compressor on
 pin_doorSensor = 19 # GPIO Input - determine if door is open
 coolingOn_temp = 50
-coolingOff_temp = 60
+coolingOff_temp = 40
 compOn_minMinutes = 2
 compOn_maxMinutes = 15
 compOff_minMinutes = 10
@@ -170,7 +162,6 @@ def thermostat(T, dt_state, client):
         #            'duration': duration (minutes) of current state}}
 
     # update duration of state for dt_state, time in state
-#    dt_state[2] = (time.time() - dt_state[1])/60 # minutes , dt_state = [current state, start time, duration in state]
     dt_state['duration'] = (time.time() - dt_state['start_ts'])/60 # minutes
     current_stateOn = dt_state['state'] # store state of compressor before thermostat state change logic
     current_stateDuration = dt_state['duration']
@@ -223,43 +214,7 @@ def thermostat(T, dt_state, client):
     return dt_state
 
 def log_data(sysData): 
-    logging.debug(f"""intTemp, compAmps, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
-
-'''
-def read_sensors():
-    # temperature sensors
-    _,intTemp = read_temp(device_files['28-0000065be5ef'])
-    _,extTemp = read_temp(device_files['28-0000065c181d'])
-    _,compTemp = read_temp(device_files['28-0000065cd66d'])
-    # current transducer
-    if ser.in_waiting > 0:
-            line = ser.readline().decode('utf-8').rstrip()
-            try:
-                msg = json.loads(line)
-                compAmps = msg[0]['vals']['Irms']
-                compPower = msg[0]['vals']['Pavg']
-            except:
-                logging.debug("error in json read")
-                compAmps = -1
-                compPower = -1
-    else:
-        compAmps = -1
-        
-    # keg weight
-    kegWeight = -1
-    # door state
-    doorState = "CLOSED"
-
-    # compile values into dict
-    sensor_dict = {'intTemp' : intTemp,
-                'extTemp' : extTemp,
-                'compTemp': compTemp,
-                'compAmps': compAmps,
-                'kegWeight': kegWeight,
-                'doorState': doorState,
-                'ts': time.time_ns()}
-    return sensor_dict
-'''
+    logging.debug(f"""intTemp, extTemp, compTemp, compAmps, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['extTemp']}, {sysData['compTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
 
 def read_sensors(ser):
     # send request over serial
@@ -355,6 +310,15 @@ def main():
     client = connect_mqtt()
     client.loop_start()
     logging.info("connection to mqtt broker success")
+    
+    # initialize ct measurement of serial TODO : add this to initialize with obj orient class func
+    try:
+        ser = serial.Serial(ser_config['adr'], ser_config['baud'], timeout=1)
+        ser.reset_input_buffer()
+        logging.debug('success - serial communication')
+    except:
+        pass
+        logging.debug('failed to initialize serial com.')
     
     # publish config message
     mqtt_pub(client, 'config', configData) 
