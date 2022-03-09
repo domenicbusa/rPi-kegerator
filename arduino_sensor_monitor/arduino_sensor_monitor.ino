@@ -1,5 +1,6 @@
 // 03MAR2022 - D. Busa - 1.0 - initial release
-// 07MAR2022 - D. Busa - 1.1 - added reading of temperature sensors
+// 07MAR2022 - D. Busa - 1.1 - added reading of temperature sensors and output via JSON serial
+// 07MAR2022 - D. Busa - 1.2 - added serial request response architecture
 // PURPOSE : measure current from YHDC current transducer and send JSON payload over serial to raspberry pi
 // NOTES
 //      this only measures apparent power, no input taken for line voltage. it is assumed constant by VOLTAGE global var
@@ -23,7 +24,7 @@ const float VOLTAGE = 120.0F; // line voltage wire on current transducer
 
 // Temperature sensors
 String temp_names[] {"intTemp","extTemp","compTemp"}; // sensor names
-OneWire ds18x20[] = { 0, D3, D4 }; // sensor pins
+OneWire ds18x20[] = { D3, D4, D5 }; // sensor pins
 const int oneWireCount = sizeof(ds18x20)/sizeof(OneWire);
 DallasTemperature sensor[oneWireCount];
 
@@ -52,7 +53,7 @@ void setup(void)
   // ads.setGain(GAIN_EIGHT);      // 8x gain   +/- 0.512V  1 bit = 0.25mV   0.015625mV
   //ads.setGain(GAIN_SIXTEEN);    // 16x gain  +/- 0.256V  1 bit = 0.125mV  0.0078125mV
   if (!ads.begin()) {
-    Serial.println("Failed to initialize ADS.");
+    Serial.println("ERROR : Failed to initialize ADS.");
     while (1);
   }
   // Set up Temperature Sensors - Start up the OneWire library on all defined bus-wires
@@ -62,6 +63,8 @@ void setup(void)
     sensor[i].begin();
     if (sensor[i].getAddress(deviceAddress, 0)) sensor[i].setResolution(deviceAddress, 12);
   }
+  Serial.println("SUCCESS : Setup complete");
+  jsonMsg_to_serial("SUCCESS", "setup void complete success");
 }
 
 /*  ==================================
@@ -72,41 +75,90 @@ void setup(void)
 
 void loop(void)
 {
-  // Read CT - measure current and calculate power
-  float currentRms = getCurrent();
-  float powerAvg = VOLTAGE * currentRms;
 
-  // Read Temperature sensors
-  float tempsF[oneWireCount]; // initialize array
-  getTemperatures(tempsF); // get temperature from each sensor on oneWire buses
+  if (Serial.available() > 0) {
+    String request = Serial.readStringUntil('\n');
+    // send serial response on rcv'd request
+    jsonMsg_to_serial("REQUEST_RCVD", request);
 
-  // recreate array in JSON doc
-  JsonArray array = doc.to<JsonArray>();
-  // add sensor dicts to JSON array
-  add_ctSensor_to_json(array, "ct0", currentRms, VOLTAGE, powerAvg);
-  add_tempSensors_to_json(array, temp_names, tempsF);
+    // determine request type
+    int request_code = -1; // TODO add logic to convert rcv'd request to code
+    if (request == "data") {
+      request_code = 0;
+    }
+    if (request == "reboot"){
+      request_code = -99;
+    }
+    // initialize variables
+    float currentRms;
+    float powerAvg;
+    float tempsF[oneWireCount]; // initialize array
+    JsonArray array;
+    
+    switch (request_code) {
+      case 0: // request == "data"
+        // Read CT - measure current and calculate power
+        currentRms = getCurrent();
+        powerAvg = VOLTAGE * currentRms;      
+        // Read Temperature sensors
+        getTemperatures(tempsF); // get temperature from each sensor on oneWire buses
 
-  // Generate the minified JSON and send it to the Serial port.
-  serializeJson(doc, Serial);
-  // Start a new line
-  Serial.println();
-
-  // clear JSON contents for new data
-  doc.clear();
-  
-  delay(1000);
+        // clear JSON contents for new data
+        doc.clear();
+        // recreate array in JSON doc
+        array = doc.to<JsonArray>();
+        // add sensor dicts to JSON array
+        add_ctSensor_to_json(array, "ct0", currentRms, VOLTAGE, powerAvg);
+        add_tempSensors_to_json(array, temp_names, tempsF);
+      
+        // Generate the minified JSON, send it to the Serial port, clear payload
+        sendJsonSerial(); // TODO: add confirmation reply?
+        break;
+        
+      case -99: // request == "reboot" --> reset arduino
+        // json response
+        jsonMsg_to_serial("INFO", "reboot");
+        // reboot arduino
+        reboot();
+        break;
+        
+      default:
+        // do nothing
+        jsonMsg_to_serial("ERROR", "invalid request");
+        break;
+    }
+    
+  }
+  // do nothing
 }
 
 /*  ==================================
  *  =========== FUNCTIONS ============
  *  ==================================
  */
- 
+
+void(* resetFunc) (void) = 0;
+
 void printMeasure(String prefix, float value, String postfix)
 {
   Serial.print(prefix);
   Serial.print(value, 3);
   Serial.println(postfix);
+}
+
+void sendJsonSerial(){
+  // Generate the minified JSON and send it to the Serial port.
+  serializeJson(doc, Serial);
+  // Start a new line
+  Serial.println();
+  // clear JSON payload from memory
+  doc.clear();
+}
+
+void reboot() {
+  wdt_disable();
+  wdt_enable(WDTO_15MS);
+  while (1) {}
 }
 
 // Read current from CT, calculate Irms and PAvg
@@ -169,4 +221,18 @@ JsonArray add_tempSensors_to_json(JsonArray &_array, String _names[oneWireCount]
   }
 
   return(_array);
+}
+
+// Adds string message information to JSON object, primarily error reporting
+void jsonMsg_to_serial(String _name, String _msg)
+{
+  // clear any contents in JSON object
+  doc.clear();
+  // define JSON object
+  JsonObject obj = doc.createNestedObject();
+  obj["name"] = _name;
+  obj["msg"] = _msg;
+  
+  // send JSON message over serial
+  sendJsonSerial();
 }
