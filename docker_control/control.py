@@ -5,6 +5,7 @@ import logging
 import random
 import serial
 import json
+import serial.tools.list_ports
 
 import paho.mqtt.client as mqtt_client
 
@@ -103,7 +104,7 @@ def initialize():
         logging.info("init success")
         # TODO - insert log entry for configuration
         logging.info("initialization parameters\ncoolingOn_temp : {}\ncoolingOff_temp : {}\ncompOn_minMinutes : {}\ncompOn_maxMinutes : {}\ncompOff_minMinutes : {}".format(coolingOn_temp,coolingOff_temp,compOn_minMinutes,compOn_maxMinutes,compOff_minMinutes))
-        print("ok")
+        print("initialization success")
     except:
         logging.error("ERROR in init")
         print("bad")
@@ -316,10 +317,22 @@ def main():
         ser = serial.Serial(ser_config['adr'], ser_config['baud'], timeout=1)
         ser.reset_input_buffer()
         logging.debug('success - serial communication')
+        print('success - serial communication')
     except:
-        pass
-        logging.debug('failed to initialize serial com.')
-    
+        logging.debug('failed to initialize serial com. with config')
+        print('failed to initialize serial com. with config')
+        # query list of com ports
+        ports = serial.tools.list_ports.comports()
+        # reattempt connection to com port
+        for port, desc, hwid in ports:
+            ser = serial.Serial(port, ser_config['baud'], timeout=1)
+            if ser.is_open:
+                logging.debug(f"port : {port} sucessfully opened, desc : {desc}")
+                print(f"port : {port} sucessfully opened, desc : {desc}")
+                break # exit loop if successfuly opened serial port
+
+
+
     # publish config message
     mqtt_pub(client, 'config', configData) 
     
