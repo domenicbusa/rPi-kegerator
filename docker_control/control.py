@@ -9,10 +9,10 @@ import serial.tools.list_ports
 
 import paho.mqtt.client as mqtt_client
 
-# configuration
+# configuration #TODO - pull this from a mounted config file
 # serial com. config
 ser_config = {'adr':'/dev/ttyUSB0','baud':9600}
-READ_INTERVAL = 10 # seconds between sensor readings
+READ_INTERVAL = 10 # TODO - add usage - seconds between sensor readings
 SERIAL_READ_TIMEOUT = 5 # seconds to wait for response
 reqSerialMsg = {"ready": True, "last_ts": 0}
 
@@ -21,7 +21,7 @@ pin_doorSensor = 19 # GPIO Input - determine if door is open
 coolingOn_temp = 50
 coolingOff_temp = 40
 compOn_minMinutes = 2
-compOn_maxMinutes = 15
+compOn_maxMinutes = 25
 compOff_minMinutes = 10
 
 configData = {'pin_compSwitch':pin_compSwitch,
@@ -161,47 +161,38 @@ def thermostat(T, dt_state, client):
         # dt_state = {'state': current state of compressor True==ON,
         #            'start_ts': start time of current state,
         #            'duration': duration (minutes) of current state}}
+        #            'last_state_change' : store last state change (1,2,3,4) this is used to continue cooling aftera comp ON-->OFF change due to duration > compOn_maxMinutes
 
     # update duration of state for dt_state, time in state
     dt_state['duration'] = (time.time() - dt_state['start_ts'])/60 # minutes
     current_stateOn = dt_state['state'] # store state of compressor before thermostat state change logic
     current_stateDuration = dt_state['duration']
     next_stateOn = current_stateOn
-    state_change = 0
+#    state_change = 0
     # state change logic
-    if T>coolingOn_temp and current_stateOn==False and dt_state['duration']>compOff_minMinutes: #dt_state[2]>compOff_minMinutes:
+    if T>coolingOn_temp and current_stateOn==False and dt_state['duration']>compOff_minMinutes:
         # normal compressor to ON
         next_stateOn = True
         state_change = 1
-        #logging.debug("1 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
-        #dt_state = [next_stateOn, time.time(), 0]
-        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
-    elif T<coolingOff_temp and current_stateOn==True and dt_state['duration']>compOn_minMinutes: #dt_state[2] > compOn_minMinutes:
+    elif T<coolingOff_temp and current_stateOn==True and dt_state['duration']>compOn_minMinutes:
         # normal compressor to OFF
         next_stateOn = False
         state_change = 2
-        #logging.debug("2 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
-        #dt_state = [next_stateOn, time.time(), 0]
-        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
-    elif current_stateOn==True and dt_state['duration'] > compOn_maxMinutes: #dt_state[2] > compOn_maxMinutes:
+    elif current_stateOn==True and dt_state['duration'] > compOn_maxMinutes:
         # timeout compressor to OFF
         next_stateOn = False
         state_change = 3
-        #logging.debug("3 - cur_state, next_state, dur_state : {} --> {} - {} mins".format(current_stateOn,next_stateOn,dt_state['duration']))
-        #dt_state = [next_stateOn, time.time(), 0]
-        #dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+    elif dt_state['last_state_change']==3 and T>coolingOff_temp and dt_state['duration']>compOff_minMinutes:
+        # continue cooling after timeout
+        next_stateOn = True
+        state_change = 4
     #else:
         # no state change
-        #next_stateOn = current_stateOn
-        # outputs
-            # next_stateOn - state of compressor (ON/OFF) for next cycle
-            # dt_state = [next_stateOn, current timestamp - duration in minutes
-    #return next_stateOn, dt_state
 
-    # tasks if an event occurred
+    # tasks if a state change occurred
     if current_stateOn != next_stateOn:
         # update dt_state
-        dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0})
+        dt_state.update({'state': next_stateOn,'start_ts': time.time(), 'duration': 0, 'last_state_change':stage_change})
         # write to log
         logging.debug(f"{state_change} - cur_state, next_state, dur_state : {current_stateOn} --> {next_stateOn} - {current_stateDuration} mins")
         # publish event over mqtt
@@ -215,7 +206,7 @@ def thermostat(T, dt_state, client):
     return dt_state
 
 def log_data(sysData): 
-    logging.debug(f"""intTemp, extTemp, compTemp, compAmps, next_state, state, state_ts, state_duration : ({sysData['intTemp']}, {sysData['extTemp']}, {sysData['compTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']})""")
+    logging.debug(f"""intTemp, extTemp, compTemp, compAmps, next_state, state, state_ts, state_duration, last_state_change : ({sysData['intTemp']}, {sysData['extTemp']}, {sysData['compTemp']}, {sysData['compAmps']}, {sysData['next_state']}, {sysData['state']}, {sysData['state_ts']}, {sysData['state_duration']}, {sysData['last_state_change']})""")
 
 def read_sensors(ser):
     # send request over serial
@@ -301,12 +292,11 @@ def mqtt_pub(client, msg_type, data):
 
 
 def main():
-    # set inital last state of compressor to OFF
-    #current_stateOn = False
-    #dt_state = [False,0,0] # (current_state, next_state,start_time,duration), initialize tracker for time in state
+    # set inital state of compressor to OFF
     dt_state = {'state': False,
                 'start_ts': 0,
-                'duration': 0}
+                'duration': 0,
+                'last_state_change': 0}
     # mqtt setup
     client = connect_mqtt()
     client.loop_start()
@@ -342,14 +332,13 @@ def main():
     #runtime code
     while True:
         # read sensors
-        sysData = read_sensors(ser) #TODO - add compPower to sysData
+        sysData = read_sensors(ser)
         
         intTemp = sysData['intTemp']
         #DEBUG intTemp = float(input("Enter intTemp : ")) #DEBUG
         
         current_stateOn = dt_state['state']
         # determine compressor state
-        #compOn, dt_state = thermostat(intTemp,current_stateOn, dt_state) #TODO - simplify by removing current_stateOn for thermostat()
         dt_state = thermostat(intTemp, dt_state, client)
         compOn = dt_state['state']
         # update sensor_dict for mqtt pub message
@@ -357,16 +346,14 @@ def main():
                             'next_state': compOn,
                             'state': current_stateOn,
                             'state_ts': round(dt_state['start_ts'],1),
-                            'state_duration': round(dt_state['duration'],1)})
+                            'state_duration': round(dt_state['duration'],1),
+                            'last_state_change': dt_state['last_state_change']})
 
         # log
         log_data(sysData)
-        #logging.debug("intTemp, next_state, state, state_ts, state_duration is ({}, {}, {}, {}, {})".format(intTemp,compOn,current_stateOn,round(dt_state[1],1),round(dt_state[2],1)))
         
         # change compressor state
         comp_switch(compOn)
-        # update dt_state for new compressor state
-        #dt_state['state'] = compOn
         
         # publish sensor to mqtt
         mqtt_pub(client, 'sensor', sysData)
